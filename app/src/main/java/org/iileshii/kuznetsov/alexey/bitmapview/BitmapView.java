@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.DragEvent;
 import android.view.MotionEvent;
@@ -18,15 +19,20 @@ import android.view.View;
  */
 public class BitmapView extends View {
     // View border params
-    private static final int LEFT_VIEW_BORDER = 0;
-    private static final int TOP_VIEW_BORDER = 0;
-    private static int RIGHT_VIEW_BORDER;
-    private static int BOTTOM_VIEW_BORDER;
+    private static final float LEFT_VIEW_BORDER = 0f;
+    private static final float TOP_VIEW_BORDER = 0f;
+    private static float RIGHT_VIEW_BORDER;
+    private static float BOTTOM_VIEW_BORDER;
     private Paint paint;
     private Bitmap bitmap;
     private Matrix matrix;
-    private float[] zero = {0, 0};
-    private float[] end = {0, 0};
+    private float[] end = {0f, 0f};
+    private float[] center = {0f, 0f};
+
+    private RectF rect;
+
+    private float lastAngle = 0;
+    private float lastScale = 1f;
 
 
     public BitmapView(Context context, AttributeSet attrs) {
@@ -43,50 +49,64 @@ public class BitmapView extends View {
         BOTTOM_VIEW_BORDER = bitmap.getHeight();
         end[0] = bitmap.getWidth();
         end[1] = bitmap.getHeight();
+        center[0] = end[0] / 2;
+        center[1] = end[1] / 2;
+        rect = new RectF(0f, 0f, end[0], end[1]);
 
         setOnDragListener(new CustomDragListener());
         setOnTouchListener(new CustomTouchListener());
     }
 
     public float getBitmapLeft() {
-        float[] dst = new float[2];
-        matrix.mapPoints(dst, zero);
-        return Math.min(dst[0], dst[1]);
+        RectF dst = new RectF();
+        matrix.mapRect(dst, rect);
+        return dst.left;
     }
 
     public float getBitmapTop() {
-        float[] dst = new float[2];
-        matrix.mapPoints(dst, zero);
-        return Math.min(dst[0], dst[1]);
+        RectF dst = new RectF();
+        matrix.mapRect(dst, rect);
+        return dst.top;
     }
 
     public float getBitmapRight() {
-        float[] dst = new float[2];
-        matrix.mapPoints(dst, end);
-        return Math.max(dst[0], dst[1]);
+        RectF dst = new RectF();
+        matrix.mapRect(dst, rect);
+        return dst.right;
     }
 
     public float getBitmapBottom() {
-        float[] dst = new float[2];
-        matrix.mapPoints(dst, end);
-        return Math.max(dst[0], dst[1]);
+        RectF dst = new RectF();
+        matrix.mapRect(dst, rect);
+        return dst.bottom;
     }
 
     public float getCenterX() {
-        return getBitmapRight() + (getBitmapRight() - getBitmapLeft()) / 2;
+        float[] dst = new float[2];
+        matrix.mapPoints(dst, center);
+        return dst[0];
     }
 
     public float getCenterY() {
-        return getBitmapTop() + (getBitmapBottom() - getBitmapTop()) / 2;
+        float[] dst = new float[2];
+        matrix.mapPoints(dst, center);
+        return dst[1];
     }
 
     public void moving(int dX, int dY) {
-        if (getBitmapLeft() + dX >= LEFT_VIEW_BORDER &&
+        boolean overboard = false;
+        if (getBitmapLeft() < LEFT_VIEW_BORDER ||
+                getBitmapTop() < TOP_VIEW_BORDER ||
+                getBitmapRight() > RIGHT_VIEW_BORDER ||
+                getBitmapBottom() > BOTTOM_VIEW_BORDER) {
+            overboard = true;
+        }
+        if ((getBitmapLeft() + dX >= LEFT_VIEW_BORDER &&
                 getBitmapTop() + dY >= TOP_VIEW_BORDER &&
                 getBitmapRight() + dX <= RIGHT_VIEW_BORDER &&
-                getBitmapBottom() + dY <= BOTTOM_VIEW_BORDER) {
-                    matrix.postTranslate(dX, dY);
-                }
+                getBitmapBottom() + dY <= BOTTOM_VIEW_BORDER) || overboard) {
+            matrix.postTranslate(dX, dY);
+        }
     }
 
 
@@ -94,33 +114,79 @@ public class BitmapView extends View {
         return (x >= getBitmapLeft() && y >= getBitmapTop() && x <= getBitmapRight() && y <= getBitmapBottom());
     }
 
-    public void setRotate(float angle) {
-        matrix.postRotate(angle, getCenterX(), getCenterY());
+    private void setRotate(float zeroX, float zeroY, float x, float y) {
+        float angle = getAngle(zeroX, zeroY, x, y);
+
+        Matrix checkMatrix = new Matrix(matrix);
+        RectF dst = new RectF();
+        checkMatrix.mapRect(dst, rect);
+
+        boolean overboard = false;
+        if (dst.left < LEFT_VIEW_BORDER ||
+                dst.top < TOP_VIEW_BORDER ||
+                dst.right > RIGHT_VIEW_BORDER ||
+                dst.bottom > BOTTOM_VIEW_BORDER) {
+            overboard = true;
+        }
+        checkMatrix.postRotate(angle - lastAngle, getCenterX(), getCenterY());
+
+        checkMatrix.mapRect(dst, rect);
+        if (overboard || (dst.left >= LEFT_VIEW_BORDER &&
+                dst.top >= TOP_VIEW_BORDER &&
+                dst.right <= RIGHT_VIEW_BORDER &&
+                dst.bottom <= BOTTOM_VIEW_BORDER)) {
+            matrix.postRotate(angle - lastAngle, getCenterX(), getCenterY());
+            lastAngle = angle;
+        }
     }
 
-    public void setScale(float scaleFactor) {
-        if (scaleFactor < 2.0f && scaleFactor > 0.4f) {
-            matrix.postScale(scaleFactor, scaleFactor);
+    private void setScale(double distCurrent, double dist0) {
+        float currentScale = (float) (distCurrent / dist0);
+        float scaleFactor = currentScale / lastScale;
+
+        Matrix checkMatrix = new Matrix(matrix);
+        RectF dst = new RectF();
+        checkMatrix.mapRect(dst, rect);
+
+        boolean overboard = false;
+        if (dst.left < LEFT_VIEW_BORDER ||
+                dst.top < TOP_VIEW_BORDER ||
+                dst.right > RIGHT_VIEW_BORDER ||
+                dst.bottom > BOTTOM_VIEW_BORDER) {
+            overboard = true;
+        }
+        checkMatrix.postScale(scaleFactor, scaleFactor);
+
+        checkMatrix.mapRect(dst, rect);
+        if ((overboard && scaleFactor < 1) || (dst.left >= LEFT_VIEW_BORDER &&
+                dst.top >= TOP_VIEW_BORDER &&
+                dst.right <= RIGHT_VIEW_BORDER &&
+                dst.bottom <= BOTTOM_VIEW_BORDER)) {
+            if (dst.height() > 48f) {
+                matrix.postScale(scaleFactor, scaleFactor, getCenterX(), getCenterY());
+                lastScale = currentScale;
+            }
         }
     }
 
     private float getAngle(float xZero, float yZero, float xNext, float yNext) {
         float angle = (float) Math.toDegrees(Math.atan2((yNext - yZero), (xNext - xZero)));
 
-//        if (angle < 0) {
-//            angle += 360;
-//        }
+        if (angle < 0) {
+            angle = angle + 360;
+        }
 
-        // TODO   return angle;
-        return 1;
+        return angle;
     }
-
 
     @Override
     public void onWindowFocusChanged(boolean hasWindowFocus) {
         super.onWindowFocusChanged(hasWindowFocus);
         RIGHT_VIEW_BORDER = getRight();
         BOTTOM_VIEW_BORDER = getBottom();
+        matrix.postTranslate(
+                RIGHT_VIEW_BORDER / 2 - getCenterX(),
+                BOTTOM_VIEW_BORDER / 2 - getCenterY());
     }
 
     @Override
@@ -174,6 +240,7 @@ public class BitmapView extends View {
         float zeroX;
         float zeroY;
 
+
         @Override
         public boolean onTouch(View view, MotionEvent motionEvent) {
 
@@ -189,19 +256,17 @@ public class BitmapView extends View {
                     zeroX = motionEvent.getX(0);
                     zeroY = motionEvent.getY(0);
                     dist0 = Math.sqrt(distx * distx + disty * disty);
+                    lastAngle = getAngle(motionEvent.getX(1), motionEvent.getY(1), motionEvent.getX(0), motionEvent.getY(0));
+                    lastScale = 1f;
                     break;
                 case MotionEvent.ACTION_MOVE:
                     if (touchState == PINCH) {
                         distx = motionEvent.getX(0) - motionEvent.getX(1);
                         disty = motionEvent.getY(0) - motionEvent.getY(1);
                         distCurrent = Math.sqrt(distx * distx + disty * disty);
-                        float angle = getAngle(
-                                zeroX,
-                                zeroY,
-                                motionEvent.getX(0),
-                                motionEvent.getY(0));
-                        setRotate(angle);
-                        setScale((float) (distCurrent / dist0));
+
+                        setScale(distCurrent, dist0);
+                        setRotate(motionEvent.getX(1), motionEvent.getY(1), motionEvent.getX(0), motionEvent.getY(0));
                         invalidate();
                     } else if (touchState == TOUCH && isContent(motionEvent.getX(), motionEvent.getY())) {
                         ClipData data = ClipData.newPlainText("", "");
